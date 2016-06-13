@@ -93,7 +93,7 @@ void SSP1_SetConfig(uint32_t speed, uint32_t polarity, uint32_t phase, uint32_t 
 	SSP_ConfigStructInit(&SSP1Cfg);
 	SSP1Cfg.CPHA = phase;
 	SSP1Cfg.Databit = databit;
-	SSP1Cfg.ClockRate = speed; // 10Mhz
+	SSP1Cfg.ClockRate = speed; 
 	SSP1Cfg.CPOL = polarity;
 	SSP1Cfg.FrameFormat = SSP_FRAME_SPI; // MSB first
 	SSP_Init(LPC_SSP1, &SSP1Cfg);
@@ -108,7 +108,7 @@ void Init_SSP1(void)
 	Init_SSP1_Pins();
 
 	// Initialize SPI0 Clocks, Polarity, Phase, etc
-	// CPOL = 0, CPHA = 1, Freq = 10MHz
+	// CPOL = 0, CPHA = 1, Freq = 25 Mhz 
 	// Databit = 8,
 	SSP1_SetConfig(SSP1_CLOCK_RATE, SSP1_POLARITY, SSP1_PHASE, SSP_DATABIT_8);
 
@@ -135,6 +135,11 @@ void SSP1_16(int s)
         LPC_SSP1->CR0 &= ~(0x08);  // switch to 8  bit Mode
 }
 
+// Sets the SSP1 clock speed
+void SSP1_Clock(unsigned int speed)
+{
+    SSP1_SetConfig(speed, SSP1_POLARITY, SSP1_PHASE, SSP_DATABIT_8);  
+}
 
 void SSP1_Write(unsigned short data)
 {
@@ -158,6 +163,7 @@ char SSP1_Read(void)
 
 	return byteread;
 }
+
 int SSP1_Transfer(unsigned short data)
 {
 	while((LPC_SSP1->SR & (1 << 1)) == 0);

@@ -17,9 +17,11 @@ extern "C" {
 
 
 // SSP1 Configuration
-#define SSP1_CLOCK_RATE			25000000 		// 10Mhz, can be faster
-#define SSP1_POLARITY			SSP_CPOL_LO		// 0 - Clock Polarit Low
-#define SSP1_PHASE				SSP_CPHA_FIRST	// 0 - Sample on first rising/low edge
+#define SSP1_CLOCK_RATE			25000000 	// 10Mhz, can be faster
+#define SSP1_POLARITY			SSP_CPOL_LO	// 0 - Clock Polarit Low
+#define SSP1_PHASE			SSP_CPHA_FIRST	// 0 - Sample on first rising/low edge
+
+#define SSPI_LOW_CLOCK_RATE             200000          // Used in SD/MMC initialization
 
 // some defines for the SSP1 DMA use
 #define DMA_CHANNEL_ENABLE      1
@@ -38,9 +40,10 @@ void SSP1_AcquireBus();
 void SSP1_ReleaseBus();
 void SSP1_SetConfig(uint32_t speed, uint32_t polarity, uint32_t phase, uint32_t databit);
 void SSP1_16(int s);
+void SSP1_Clock(unsigned int speed);
 void SSP1_Write(unsigned short data);
 char SSP1_Read(void);
-int SSP1_Transfer(unsigned short data);
+int  SSP1_Transfer(unsigned short data);
 void SSP1_WaitBusy();
 void SSP1_SharedCSSet(uint32_t port, uint32_t pin, int val);
 void SSP1_WriteDMA(int val, int numbytes);

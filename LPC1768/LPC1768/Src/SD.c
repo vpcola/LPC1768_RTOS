@@ -14,8 +14,9 @@
  *
  ******************************************************************************/
 
-#include "lpc17xx_spi.h"
-#include "sd.h"
+#include "SSP1.h"
+#include "PINDEFINES.h"
+#include "SD.h"
 #include "diskio.h"
 
 /* Command definitions in SPI bus mode */
@@ -64,9 +65,19 @@ static volatile WORD Timer1, Timer2;	/* 100Hz decrement timer stopped at zero (d
 static volatile DSTATUS Stat = STA_NOINIT;	/* Disk status */
 
 /** Select the card */
-#define SD_Select()  do {SPI_CS_Low();} while (0)
+// #define SD_Select()  do {SPI_CS_Low();} while (0)
 /** DeSelect the card */
-#define SD_DeSelect() do { SPI_CS_High ();SPI_RecvByte();} while (0)
+// #define SD_DeSelect() do { SPI_CS_High ();SPI_RecvByte();} while (0)
+
+void SD_Select()
+{
+    SSP1_SharedCSSet(SDMMC_CS_PORT, SDMMC_CS_PIN, 0);
+}
+
+void SD_DeSelect()
+{
+    SSP1_SharedCSSet(SDMMC_CS_PORT, SDMMC_CS_PIN, 1);
+}
 
 
 /*-----------------------------------------------------------------------*/
@@ -251,14 +262,19 @@ SD_BOOL SD_Init (void)
     /* Set card type to unknown */
     CardType = CARDTYPE_UNKNOWN;
 
-    /* Init SPI interface */
-    SPI_Init ();
+    /* Init SSP1 interface */
+    // SPI_Init (); // Assume SSP1 is already initialized
 
     /* Before reset, Send at least 74 clocks at low frequency 
     (between 100kHz and 400kHz) with CS high and DI (MISO) high. */
-    SD_DeSelect();
-    SPI_ConfigClockRate (SPI_CLOCKRATE_LOW);
-    for (i = 0; i < 10; i++)    SPI_SendByte (0xFF);
+
+    // Acquire the SSP1 bus first
+    SSP1_AcquireBus();
+
+    SD_DeSelect();  // CS does not go low at this stage
+    SSP1_Clock(SSPI_LOW_CLOCK_RATE);
+    for (i = 0; i < 10; i++)    
+        SSP1_Write (0xFF);
 
     /* Send CMD0 with CS low to enter SPI mode and reset the card.
     The card will enter SPI mode if CS is low during the reception of CMD0. 
@@ -324,11 +340,13 @@ init_end:
 
     if (CardType == CARDTYPE_UNKNOWN)
     {
+        SSP1_ReleaseBus();
         return (SD_FALSE);
     }
     else     /* Init OK. use high speed during data transaction stage. */
     {
-        SPI_ConfigClockRate (SPI_CLOCKRATE_HIGH);
+        SSP1_Clock(SSP1_CLOCK_RATE);
+        SSP1_ReleaseBus();
         return (SD_TRUE);
     }
 }
@@ -344,9 +362,10 @@ init_end:
 SD_BOOL SD_WaitForReady (void)
 {
     Timer2 = 50;    // 500ms
-    SPI_RecvByte(); /* Read a byte (Force enable DO output) */
+    SSP1_Read(); /* Read a byte (Force enable DO output) */
     do {
-        if (SPI_RecvByte () == 0xFF) return SD_TRUE;
+        if (SSP1_Read() == 0xFF) return SD_TRUE;
+        Timer2--;
     } while (Timer2);
 
     return SD_FALSE;    
@@ -382,19 +401,19 @@ uint8_t SD_SendCommand (uint8_t cmd, uint32_t arg, uint8_t *buf, uint32_t len)
     else                            crc_stop = 0x01; /* dummy CRC7 + Stop bit */
 
     /* Send 6-byte command with CRC. */ 
-    SPI_SendByte (cmd | 0x40);
-    SPI_SendByte (arg >> 24);
-    SPI_SendByte (arg >> 16);
-    SPI_SendByte (arg >> 8);
-    SPI_SendByte (arg);
-    SPI_SendByte (crc_stop); /* Valid or dummy CRC plus stop bit */
+    SSP1_Write (cmd | 0x40);
+    SSP1_Write (arg >> 24);
+    SSP1_Write (arg >> 16);
+    SSP1_Write (arg >> 8);
+    SSP1_Write (arg);
+    SSP1_Write (crc_stop); /* Valid or dummy CRC plus stop bit */
 
    
     /* The command response time (Ncr) is 0 to 8 bytes for SDC, 
     1 to 8 bytes for MMC. */
     for (i = 8; i; i--)
     {
-        r1 = SPI_RecvByte ();
+        r1 = SSP1_Read ();
         if (r1 != 0xFF) break;   /* received valid response */      
     }
     if (i == 0)  return (0x82); /* command response time out error */
@@ -403,7 +422,7 @@ uint8_t SD_SendCommand (uint8_t cmd, uint32_t arg, uint8_t *buf, uint32_t len)
     if (buf && len)
     {
         do {   
-            *buf++ = SPI_RecvByte ();
+            *buf++ = SSP1_Read ();
         } while (--len);
     }
 
@@ -508,7 +527,7 @@ SD_BOOL SD_WriteSector (uint32_t sect, const uint8_t *buf, uint32_t cnt)
             } while (--cnt);
 
             /* Send Stop Transmission Token. */
-            SPI_SendByte (0xFD);
+            SSP1_Write (0xFD);
         
             /* Wait for complete */
             if (SD_WaitForReady() && cnt==0) flag = SD_TRUE;
@@ -584,7 +603,7 @@ SD_BOOL SD_ReadConfiguration ()
         case CARDTYPE_SDV2_HC:
             if ((SD_SendACommand (SD_STATUS, 0, buf, 1) !=  R1_NO_ERROR) ||
                 SD_RecvDataBlock(buf, 16) == SD_FALSE) goto end;      /* Read partial block */    
-            for (i=64-16;i;i--) SPI_RecvByte();  /* Purge trailing data */            
+            for (i=64-16;i;i--) SSP1_Read();  /* Purge trailing data */            
             CardConfig.blocksize = 16UL << (buf[10] >> 4); /* Calculate block size based on AU size */
             break;
         case CARDTYPE_MMC:
@@ -619,25 +638,23 @@ SD_BOOL SD_RecvDataBlock (uint8_t *buf, uint32_t len)
     uint32_t i;
 
     /* Read data token (0xFE) */
-	Timer1 = 10;   /* Data Read Timerout: 100ms */
-	do {							
-		datatoken = SPI_RecvByte ();
+    Timer1 = 10;   /* Data Read Timerout: 100ms */
+    do {							
+	datatoken = SSP1_Read ();
         if (datatoken == 0xFE) break;
-	} while (Timer1);
-	if(datatoken != 0xFE) return (SD_FALSE);	/* data read timeout */
+            Timer1--;
+    } while (Timer1);
 
-    /* Read data block */
-#ifdef USE_FIFO
-    SPI_RecvBlock_FIFO (buf, len);
-#else
+    if(datatoken != 0xFE) return (SD_FALSE);	/* data read timeout */
+
+    /* TODO: Use DMA here */    
     for (i = 0; i < len; i++) {
-        buf[i] = SPI_RecvByte ();
+        buf[i] = SSP1_Read();
     }
-#endif
 
     /* 2 bytes CRC will be discarded. */
-    SPI_RecvByte ();
-    SPI_RecvByte ();
+    SSP1_Read ();
+    SSP1_Read ();
 
     return (SD_TRUE);
 }
@@ -657,30 +674,26 @@ SD_BOOL SD_SendDataBlock (const uint8_t *buf, uint8_t tkn, uint32_t len)
     uint32_t i;
     
     /* Send Start Block Token */
-    SPI_SendByte (tkn);
+    SSP1_Write (tkn);
 
-    /* Send data block */
-#ifdef USE_FIFO
-    SPI_SendBlock_FIFO (buf, len);
-#else
+    /* TODO: Use DMA here */
     for (i = 0; i < len; i++) 
     {
-      SPI_SendByte (buf[i]);
+      SSP1_Write (buf[i]);
     }
-#endif
 
     /* Send 2 bytes dummy CRC */
-    SPI_SendByte (0xFF);
-    SPI_SendByte (0xFF);
+    SSP1_Write (0xFF);
+    SSP1_Write (0xFF);
 
     /* Read data response to check if the data block has been accepted. */
-    if (( (SPI_RecvByte ()) & 0x0F) != 0x05)
+    if (( (SSP1_Read ()) & 0x0F) != 0x05)
         return (SD_FALSE); /* write error */
 
     /* Wait for wirte complete. */
     Timer1 = 20;  // 200ms
     do {
-        recv = SPI_RecvByte();
+        recv = SSP1_Read();
         if (recv == 0xFF) break;  
     } while (Timer1);
 
